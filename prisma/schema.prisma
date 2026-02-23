@@ -1,0 +1,36 @@
+generator client {
+  provider        = "prisma-client-js"
+  previewFeatures = ["postgresqlExtensions"]
+}
+
+datasource db {
+  provider   = "postgresql"
+  url        = env("DATABASE_URL")
+  extensions = [vector]
+}
+
+model Chat {
+  id        String    @id @default(uuid())
+  title     String    @default("Nuevo Chat")
+  createdAt DateTime  @default(now())
+  messages  Message[]
+}
+
+model Message {
+  id        String   @id @default(uuid())
+  chatId    String
+  chat      Chat     @relation(fields: [chatId], references: [id], onDelete: Cascade)
+  role      String   
+  content   String
+  toolCalls Json?    
+  reasoning String?  
+  createdAt DateTime @default(now())
+}
+
+model Document {
+  id        String                 @id @default(uuid())
+  content   String
+  metadata  Json?                  
+  embedding Unsupported("vector(768)")? 
+  createdAt DateTime               @default(now())
+}
