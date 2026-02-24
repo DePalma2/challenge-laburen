@@ -44,8 +44,8 @@ npm install
 Crear archivo `.env`:
 
 ```env
-DATABASE_URL
-OPENROUTER_API_KEY
+DATABASE_URL="postgresql://..."
+OPENROUTER_API_KEY="sk-or-v1-..."
 ```
 
 Generar Prisma Client y aplicar schema:
@@ -60,9 +60,6 @@ Iniciar servidor de desarrollo:
 ```bash
 npm run dev
 ```
-
-
----
 
 ## Deployment
 

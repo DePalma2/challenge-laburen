@@ -1,24 +1,27 @@
-import { streamText } from "ai";
+import { streamText, stepCountIs } from "ai";
 import type { NextApiRequest, NextApiResponse } from "next";
 import { prisma } from "@/lib/prisma";
 import { chatModel, systemPrompt } from "@/lib/ai-config";
-import { searchInRAG } from "@/lib/ai-tools";
+import { makeSearchInRAG } from "@/lib/ai-tools";
 import { Prisma } from "@prisma/client";
 
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
   if (req.method === "GET") {
     try {
+      const { chatId } = req.query;
+      const activeChatId = typeof chatId === "string" ? chatId : "chat-default";
+
       const messages = await prisma.message.findMany({
-        where: { chatId: "chat-default" },
+        where: { chatId: activeChatId },
         orderBy: { createdAt: "asc" },
       });
-      // Convert to ai SDK format
+
+      // Convert to ai SDK format for the frontend
       const formatted = messages.map((m: any) => ({
         id: m.id,
         role: m.role,
         content: m.content,
-        // @ts-ignore
-        toolInvocations: m.toolCalls ? m.toolCalls.map((tc: any) => ({
+        toolInvocations: m.toolCalls ? (m.toolCalls as any[]).map((tc: any) => ({
           toolCallId: tc.toolCallId,
           toolName: tc.toolName,
           args: tc.args || tc.input,
@@ -33,40 +36,68 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   }
 
   if (req.method !== "POST") return res.status(405).end();
-  const { messages } = req.body;
+  const { messages, chatId } = req.body;
+  const activeChatId = chatId || "chat-default";
+  // Validate messages array
+  if (!Array.isArray(messages) || messages.length === 0) {
+    console.error('Invalid or missing messages payload');
+    return res.status(400).json({ error: 'Invalid or missing messages' });
+  }
   const lastUserMessage = messages[messages.length - 1];
-
   try {
-    await prisma.message.create({
-      data: {
-        chat: {
-          connectOrCreate: {
-            where: { id: "chat-default" },
-            create: { id: "chat-default", title: "Chat RAG Principal" },
+    // Persist user message first if it doesn't exist (to avoid duplicates if client sent it twice)
+    // Note: useChat might send the whole history, we only want to persist the NEW user message.
+    if (lastUserMessage.role === "user" && lastUserMessage.id && !lastUserMessage.id.startsWith("temp-")) {
+      const exists = await prisma.message.findFirst({
+        where: { id: lastUserMessage.id }
+      });
+
+      if (!exists) {
+        await prisma.message.create({
+          data: {
+            id: lastUserMessage.id,
+            chat: {
+              connectOrCreate: {
+                where: { id: activeChatId },
+                create: { id: activeChatId, title: "Chat RAG " + activeChatId.slice(0, 5) },
+              },
+            },
+            role: "user",
+            content: lastUserMessage.content,
           },
+        });
+      }
+    } else if (lastUserMessage.role === "user") {
+      // If it's a temporary ID, still persist it but maybe with a new UUID or just use connectOrCreate
+      await prisma.message.create({
+        data: {
+          chat: {
+            connectOrCreate: {
+              where: { id: activeChatId },
+              create: { id: activeChatId, title: "Chat RAG " + activeChatId.slice(0, 5) },
+            },
+          },
+          role: "user",
+          content: lastUserMessage.content,
         },
-        role: "user",
-        content: lastUserMessage.content,
-      },
-    });
+      });
+    }
+
+
+    const coreMessages = messages.map((m: any) => ({
+      role: m.role as "user" | "assistant" | "system",
+      content: typeof m.content === "string" ? m.content : String(m.content ?? ""),
+    }));
+
 
     const result = await streamText({
       model: chatModel as any,
       system: systemPrompt,
-      messages,
-      tools: { searchInRAG },
-      // @ts-ignore
-      maxSteps: 5,
+      messages: coreMessages,
+      tools: { searchInRAG: makeSearchInRAG(activeChatId) },
+      stopWhen: stepCountIs(5),
       onFinish: async (event) => {
         try {
-          const reasoningValue = event.reasoning
-            ? (typeof event.reasoning === "string"
-              ? event.reasoning
-              : Array.isArray(event.reasoning) && event.reasoning.length > 0
-                ? JSON.stringify(event.reasoning)
-                : null)
-            : null;
-
           const combinedToolCalls = event.toolCalls?.map((tc: any) => {
             const tr = event.toolResults?.find((r: any) => r.toolCallId === tc.toolCallId);
             return {
@@ -77,14 +108,12 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
           await prisma.message.create({
             data: {
-              chatId: "chat-default",
+              chatId: activeChatId,
               role: "assistant",
               content: event.text || "",
               toolCalls: combinedToolCalls ? (combinedToolCalls as any) : Prisma.JsonNull,
-              reasoning: reasoningValue,
             },
           });
-          console.log("Respuesta persistida en Supabase.");
         } catch (dbError) {
           console.error("Error al persistir respuesta:", dbError);
         }
@@ -100,40 +129,36 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     });
 
     for await (const part of result.fullStream) {
-      switch (part.type) {
+      const p = part as any;
+      switch (p.type) {
         case "text-delta":
-          res.write(`0:${JSON.stringify((part as any).text || (part as any).textDelta)}\n`);
+          res.write(`0:${JSON.stringify(p.text || p.textDelta)}\n`);
           break;
         case "tool-call":
           res.write(`9:${JSON.stringify({
-            toolCallId: (part as any).toolCallId,
-            toolName: (part as any).toolName,
-            args: (part as any).args || (part as any).input || {},
+            toolCallId: p.toolCallId,
+            toolName: p.toolName,
+            args: p.args || p.input,
           })}\n`);
           break;
         case "tool-result":
           res.write(`a:${JSON.stringify({
-            toolCallId: (part as any).toolCallId,
-            toolName: (part as any).toolName,
-            args: (part as any).args || (part as any).input || {},
-            result: (part as any).result || (part as any).output,
+            toolCallId: p.toolCallId,
+            toolName: p.toolName,
+            args: p.args || p.input,
+            result: p.result || p.output,
           })}\n`);
           break;
         case "error":
-          res.write(`3:${JSON.stringify(String((part as any).error))}\n`);
+          res.write(`3:${JSON.stringify(String(p.error))}\n`);
           break;
         default:
           break;
       }
     }
 
-    res.write(
-      `d:${JSON.stringify({
-        finishReason: "stop",
-        usage: { promptTokens: 0, completionTokens: 0 },
-      })}\n`
-    );
 
+    res.write(`d:${JSON.stringify({ finishReason: "stop", usage: { promptTokens: 0, completionTokens: 0 } })}\n`);
     res.end();
   } catch (error) {
     console.error("Error Crítico API Chat:", error);

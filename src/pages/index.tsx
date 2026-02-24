@@ -168,6 +168,8 @@ function UploadProgress({ stage, fileName, progress }: {
 }
 
 export default function ChatPage() {
+  const [chats, setChats] = useState<any[]>([]);
+  const [currentChatId, setCurrentChatId] = useState("chat-default");
   const [isUploading, setIsUploading] = useState(false);
   const [uploadStage, setUploadStage] = useState("reading");
   const [uploadFileName, setUploadFileName] = useState("");
@@ -176,27 +178,63 @@ export default function ChatPage() {
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // @ts-ignore
   const { messages, input, handleInputChange, handleSubmit, isLoading, setMessages } = useChat({
-    // @ts-ignore
     api: "/api/chat",
+    id: currentChatId,
+    body: { chatId: currentChatId },
   });
 
+  // Fetch chats list
+  const fetchChats = useCallback(async () => {
+    try {
+      const res = await fetch("/api/chats");
+      const data = await res.json();
+      if (Array.isArray(data)) setChats(data);
+    } catch (e) {
+      console.error("Error fetching chats:", e);
+    }
+  }, []);
+
   useEffect(() => {
-    fetch("/api/chat")
+    fetchChats();
+  }, [fetchChats]);
+
+  // Load messages when currentChatId changes
+  useEffect(() => {
+    fetch(`/api/chat?chatId=${currentChatId}`)
       .then(r => r.json())
       .then(data => {
-        if (Array.isArray(data) && data.length > 0) {
-          setMessages(data);
-        }
+        setMessages(Array.isArray(data) ? data : []);
       })
       .catch(console.error);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [currentChatId, setMessages]);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
+
+  const createNewChat = async () => {
+    try {
+      const res = await fetch("/api/chats", { method: "POST" });
+      const newChat = await res.json();
+      setChats(prev => [newChat, ...prev]);
+      setCurrentChatId(newChat.id);
+    } catch (e) {
+      console.error("Error creating chat:", e);
+    }
+  };
+
+  const deleteChat = async (id: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (!confirm("¿Eliminar este chat?")) return;
+    try {
+      await fetch(`/api/chats?id=${id}`, { method: "DELETE" });
+      setChats(prev => prev.filter(c => c.id !== id));
+      if (currentChatId === id) setCurrentChatId("chat-default");
+    } catch (e) {
+      console.error("Error deleting chat:", e);
+    }
+  };
 
   const handleFileUpload = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -217,6 +255,7 @@ export default function ChatPage() {
 
     const formData = new FormData();
     formData.append("file", file);
+    formData.append("chatId", currentChatId); // scope document to current chat
 
     const progressStages = [
       { stage: "extracting", progress: 25, delay: 500 },
@@ -264,7 +303,7 @@ export default function ChatPage() {
       }, 4000);
       if (fileInputRef.current) fileInputRef.current.value = "";
     }
-  }, []);
+  }, [currentChatId]);
 
   const onSubmit = (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
@@ -272,144 +311,172 @@ export default function ChatPage() {
   };
 
   return (
-    <div className="chat-container">
-      <div className="chat-header">
-        <span className="header-title">Challenge</span>
-      </div>
-
-      <div className="messages-area">
-        {messages.length === 0 && (
-          <div className="empty-state">
-            <div className="empty-icon">💬</div>
-            <div className="empty-title">Hola!</div>
-            <div className="empty-subtitle">
-              Subí un documento PDF, TXT, MD o DOCX con el botón 📄 y luego preguntame sobre su contenido.
-              Uso RAG con pgvector para buscar información relevante.
-            </div>
-          </div>
-        )}
-
-        {messages.map((m: any) => (
-          <div key={m.id} className={`msg msg-${m.role}`}>
-            <div className="msg-role">
-              {m.role === "user" ? "Tú" : "Asistente AI"}
-            </div>
-            <div className="msg-bubble">
-              {m.role === "assistant" ? (
-                (m.content.trim().startsWith('{"name"') || m.content.trim().startsWith('{"tool')) ? null : (
-                  m.content.trim() ? <ReactMarkdown>{m.content}</ReactMarkdown> : null
-                )
-              ) : (
-                <p>{m.content}</p>
-              )}
-
-              {m.toolInvocations && m.toolInvocations.length > 0 && (
-                <details className="rag-details-container">
-                  <summary className="rag-details-summary">
-                    🔍 Ver detalles de la búsqueda (RAG)
-                  </summary>
-                  <div className="rag-details-content">
-                    {m.toolInvocations.map((tool: any) => {
-                      const hasResult = "result" in tool && tool.result !== null;
-
-                      return (
-                        <div key={tool.toolCallId}>
-                          <ToolStateIndicator
-                            toolName={tool.toolName}
-                            state={hasResult ? "completed" : "running"}
-                          />
-
-                          {hasResult && tool.toolName === "searchInRAG" && tool.result && (
-                            <RAGResults data={tool.result as RAGResponse} />
-                          )}
-                        </div>
-                      );
-                    })}
-                  </div>
-                </details>
-              )}
-            </div>
-          </div>
-        ))}
-
-        {isLoading && (
-          <div className="msg msg-assistant">
-            <div className="thinking-indicator">
-              <div className="thinking-dots">
-                <span />
-                <span />
-                <span />
-              </div>
-              Pensando y procesando
-            </div>
-          </div>
-        )}
-
-        <div ref={messagesEndRef} />
-      </div>
-
-      {isUploading && (
-        <UploadProgress
-          stage={uploadStage}
-          fileName={uploadFileName}
-          progress={uploadProgress}
-        />
-      )}
-
-      {uploadResult && !isUploading && (
-        <div className={`upload-result ${uploadResult.error ? "error" : "success"}`}
-          style={{ margin: "0 24px 8px" }}>
-          {uploadResult.error ? (
-            <>❌ Error: {uploadResult.error}</>
-          ) : (
-            <>
-              ✅ {uploadResult.message}
-              <div className="upload-result-details">
-                <span>📄 {uploadResult.fileName}</span>
-                <span>🧩 {uploadResult.chunks} chunks</span>
-                <span>📝 {uploadResult.textLength} caracteres</span>
-              </div>
-            </>
-          )}
-        </div>
-      )}
-
-      <div className="input-area">
-        <form onSubmit={onSubmit} className="input-form">
-          <label className={`file-upload-btn ${isUploading ? "uploading" : ""}`} title="Subir documento (PDF, TXT, MD, DOCX)">
-            <input
-              ref={fileInputRef}
-              type="file"
-              accept=".pdf,.txt,.md,.docx"
-              onChange={handleFileUpload}
-              disabled={isUploading}
-            />
-            📄
-          </label>
-
-          <input
-            value={input}
-            onChange={handleInputChange}
-            disabled={isLoading}
-            placeholder="Preguntá sobre tus documentos"
-            className="chat-input"
-          />
-
-          <button
-            type="submit"
-            disabled={isLoading || !input?.trim()}
-            className="send-btn"
-          >
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <line x1="22" y1="2" x2="11" y2="13" />
-              <polygon points="22 2 15 22 11 13 2 9 22 2" />
-            </svg>
+    <div className="app-container">
+      <aside className="sidebar">
+        <div className="sidebar-header">
+          <button className="new-chat-btn" onClick={createNewChat}>
+            <span>+</span> Nuevo Chat
           </button>
-        </form>
-        <div className="input-hint">
-          <span>Formatos soportados:</span> PDF, TXT, MD, DOCX
         </div>
-      </div>
+        <div className="chat-list">
+          <div 
+            className={`chat-item ${currentChatId === "chat-default" ? "active" : ""}`}
+            onClick={() => setCurrentChatId("chat-default")}
+          >
+            <span>💬</span> Principal (Default)
+          </div>
+          {chats.map(chat => (
+            <div 
+              key={chat.id} 
+              className={`chat-item ${currentChatId === chat.id ? "active" : ""}`}
+              onClick={() => setCurrentChatId(chat.id)}
+            >
+              <span title={chat.title}>💬 {chat.title.length > 20 ? chat.title.slice(0, 20) + '...' : chat.title}</span>
+              <button className="delete-chat-btn" onClick={(e) => deleteChat(chat.id, e)}>×</button>
+            </div>
+          ))}
+        </div>
+      </aside>
+
+      <main className="chat-main">
+        <div className="chat-container">
+          <div className="chat-inner-container">
+            <div className="chat-header">
+              <span className="header-title">Laburen AI - {chats.find(c => c.id === currentChatId)?.title || "Principal"}</span>
+            </div>
+
+
+          <div className="messages-area">
+            {messages.length === 0 && (
+              <div className="empty-state">
+                <div className="empty-icon">💬</div>
+                <div className="empty-title">¡Hola!</div>
+                <div className="empty-subtitle">
+                  Utiliza este chat para subir documentos y hacerme preguntas.
+                </div>
+              </div>
+            )}
+
+            {messages.map((m: any) => (
+              <div key={m.id} className={`msg msg-${m.role}`}>
+                <div className="msg-role">
+                  {m.role === "user" ? "Tú" : "Asistente AI"}
+                </div>
+                <div className="msg-bubble">
+                  {m.role === "assistant" ? (
+                    (m.content && !m.content.trim().startsWith('{"name"') && !m.content.trim().startsWith('{"tool')) ? (
+                      <ReactMarkdown>{m.content}</ReactMarkdown>
+                    ) : null
+                  ) : (
+                    <p>{m.content}</p>
+                  )}
+
+                  {m.toolInvocations && m.toolInvocations.length > 0 && (
+                    <details className="rag-details-container" open={messages.length === messages.indexOf(m) + 1}>
+                      <summary className="rag-details-summary">
+                        Ver detalles de la búsqueda (RAG)
+                      </summary>
+                      <div className="rag-details-content">
+                        {m.toolInvocations.map((tool: any) => {
+                          const hasResult = "result" in tool && tool.result !== null;
+
+                          return (
+                            <div key={tool.toolCallId}>
+                              <ToolStateIndicator
+                                toolName={tool.toolName}
+                                state={hasResult ? "completed" : "running"}
+                              />
+
+                              {hasResult && tool.toolName === "searchInRAG" && tool.result && (
+                                <RAGResults data={tool.result as RAGResponse} />
+                              )}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </details>
+                  )}
+                </div>
+              </div>
+            ))}
+
+            {isLoading && (
+              <div className="msg msg-assistant">
+                <div className="thinking-indicator">
+                  <div className="thinking-dots">
+                    <span />
+                    <span />
+                    <span />
+                  </div>
+                  Procesando respuesta...
+                </div>
+              </div>
+            )}
+
+            <div ref={messagesEndRef} />
+          </div>
+
+          {isUploading && (
+            <UploadProgress
+              stage={uploadStage}
+              fileName={uploadFileName}
+              progress={uploadProgress}
+            />
+          )}
+
+          {uploadResult && !isUploading && (
+            <div className={`upload-result ${uploadResult.error ? "error" : "success"}`}
+              style={{ margin: "0 24px 8px" }}>
+              {uploadResult.error ? (
+                <>❌ Error: {uploadResult.error}</>
+              ) : (
+                <>
+                  ✅ {uploadResult.message}
+                  <div className="upload-result-details">
+                    <span>📄 {uploadResult.fileName}</span>
+                    <span>🧩 {uploadResult.chunks} chunks</span>
+                  </div>
+                </>
+              )}
+            </div>
+          )}
+
+          <div className="input-area">
+            <form onSubmit={onSubmit} className="input-form">
+              <label className={`file-upload-btn ${isUploading ? "uploading" : ""}`} title="Subir documento">
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept=".pdf,.txt,.md,.docx"
+                  onChange={handleFileUpload}
+                  disabled={isUploading}
+                />
+                📄
+              </label>
+
+              <input
+                value={input}
+                onChange={handleInputChange}
+                disabled={isLoading}
+                placeholder="Pregunta sobre tus documentos..."
+                className="chat-input"
+              />
+
+              <button
+                type="submit"
+                disabled={isLoading || !input?.trim()}
+                className="send-btn"
+              >
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <line x1="22" y1="2" x2="11" y2="13" />
+                  <polygon points="22 2 15 22 11 13 2 9 22 2" />
+                </svg>
+              </button>
+            </form>
+          </div>
+          </div>
+        </div>
+      </main>
     </div>
   );
 }

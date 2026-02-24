@@ -138,7 +138,9 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
   try {
     console.log("📥 Recibiendo archivo...");
-    const { files } = await parseForm(req);
+    const { files, fields } = await parseForm(req);
+    // chatId comes from the multipart form field sent by the frontend
+    const chatId = Array.isArray(fields.chatId) ? fields.chatId[0] : (fields.chatId ?? null);
 
     const file = Array.isArray(files.file) ? files.file[0] : files.file;
     if (!file) {
@@ -167,12 +169,14 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         const embedding = await generateEmbedding(chunk);
 
         await prisma.$executeRawUnsafe(
-          `INSERT INTO "Document" (id, content, embedding, metadata) 
-           VALUES (gen_random_uuid(), $1, $2::vector, $3::jsonb)`,
+          `INSERT INTO "Document" (id, "chatId", content, embedding, metadata) 
+           VALUES (gen_random_uuid(), $1, $2, $3::vector, $4::jsonb)`,
+          chatId,
           chunk,
           `[${embedding.join(",")}]`,
           JSON.stringify({
             fileName,
+            chatId,
             chunkIndex: processed,
             totalChunks: chunks.length,
             chunkLength: chunk.length,

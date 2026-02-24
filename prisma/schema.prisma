@@ -29,6 +29,7 @@ model Message {
 
 model Document {
   id        String                 @id @default(uuid())
+  chatId    String?                // which chat this document belongs to (null = global)
   content   String
   metadata  Json?                  
   embedding Unsupported("vector(768)")? 
