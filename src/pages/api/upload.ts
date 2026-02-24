@@ -28,8 +28,9 @@ async function extractText(filePath: string, fileName: string): Promise<string> 
   switch (ext) {
     case ".pdf": {
       const dataBuffer = fs.readFileSync(filePath);
-      // Use the internal path to avoid the DOMMatrix/canvas initialization
-      // that pdf-parse's index.js triggers in serverless environments (Vercel)
+      // Use the internal lib path to skip the test-runner code in index.js
+      // that triggers DOMMatrix errors in Vercel's serverless environment
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
       const pdfParse = require("pdf-parse/lib/pdf-parse.js");
       const pdfData = await pdfParse(dataBuffer);
       return pdfData.text;
