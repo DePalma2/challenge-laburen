@@ -28,20 +28,11 @@ async function extractText(filePath: string, fileName: string): Promise<string> 
   switch (ext) {
     case ".pdf": {
       const dataBuffer = fs.readFileSync(filePath);
-      const pdfParseModule = require("pdf-parse");
-      const PDFParse = pdfParseModule.PDFParse || pdfParseModule.default?.PDFParse || pdfParseModule;
-
-      if (typeof PDFParse === "function" && PDFParse.prototype?.getText) {
-        const parser = new PDFParse({ data: new Uint8Array(dataBuffer) });
-        const textResult = await parser.getText();
-        await parser.destroy();
-        return textResult.text;
-      } else if (typeof PDFParse === "function") {
-        const pdfData = await PDFParse(dataBuffer);
-        return pdfData.text;
-      } else {
-        throw new Error("No se pudo cargar pdf-parse correctamente. Tipo: " + typeof PDFParse);
-      }
+      // Use the internal path to avoid the DOMMatrix/canvas initialization
+      // that pdf-parse's index.js triggers in serverless environments (Vercel)
+      const pdfParse = require("pdf-parse/lib/pdf-parse.js");
+      const pdfData = await pdfParse(dataBuffer);
+      return pdfData.text;
     }
     case ".txt":
     case ".md": {
